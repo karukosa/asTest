@@ -14,7 +14,7 @@
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
-  *
+  * This code was created by Vu Nam Hung aka Karukosa
   *
   */
 /* USER CODE END Header */
@@ -69,6 +69,22 @@ static TM1637Handle tm1637;
 static uint32_t lastTempReadTick = 0U;
 static uint8_t tempSensorReady = 0U;
 
+typedef enum {
+  AUTO_PHASE_IDLE = 0,
+  AUTO_PHASE_FILL_WATER,
+  AUTO_PHASE_AIR_REMOVAL,
+  AUTO_PHASE_HEATING_RAMP,
+  AUTO_PHASE_STERILIZATION_HOLD,
+  AUTO_PHASE_EXHAUST,
+  AUTO_PHASE_DRYING,
+  AUTO_PHASE_COMPLETE
+} AutoPhase;
+
+static AutoPhase autoPhase = AUTO_PHASE_IDLE;
+static uint32_t autoPhaseStartTick = 0U;
+static uint32_t autoLastToggleTick = 0U;
+static uint8_t autoPulseCount = 0U;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -88,6 +104,8 @@ static void SetStopIndicator(uint8_t on);
 static void HandleManualMode(void);
 static void HandleAutoMode(uint32_t now);
 static void UpdateTemperatureDisplay(uint32_t now);
+static void AutoEnterPhase(AutoPhase nextPhase, uint32_t now);
+static void AutoResetCycle(void);
 
 /* USER CODE END PFP */
 
@@ -146,12 +164,158 @@ static void HandleManualMode(void)
 
 static void HandleAutoMode(uint32_t now)
 {
-  (void)now;
-  /*
-   * TODO: Add your automatic sequence here.
-   * Keep autoRunning = 1 while sequence is active.
-   */
+  const uint32_t fillWaterDurationMs = 5000U;
+  const uint32_t airRemovalPulseMs = 1000U;
+  const uint8_t airRemovalCycles = 3U;
+  const uint32_t heatingRampDurationMs = 10000U;
+  const uint32_t sterilizationHoldDurationMs = 20000U;
+  const uint32_t holdHeaterPeriodMs = 1000U;
+  const uint32_t holdHeaterOnMs = 600U;
+  const uint32_t exhaustDurationMs = 6000U;
+  const uint32_t dryingPulseMs = 1200U;
+  const uint8_t dryingCycles = 3U;
+  uint32_t elapsed = now - autoPhaseStartTick;
+  uint32_t holdPeriodPos = 0U;
+
+  switch (autoPhase) {
+    case AUTO_PHASE_IDLE:
+      heaterOn = 0U;
+      pumpOn = 0U;
+      valeOn = 0U;
+      break;
+
+    case AUTO_PHASE_FILL_WATER:
+      heaterOn = 0U;
+      pumpOn = 0U;
+      valeOn = 1U;
+      if (elapsed >= fillWaterDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_AIR_REMOVAL, now);
+      }
+      break;
+
+    case AUTO_PHASE_AIR_REMOVAL:
+      pumpOn = 1U;
+      valeOn = 0U;
+      if ((now - autoLastToggleTick) >= airRemovalPulseMs) {
+        autoLastToggleTick = now;
+        heaterOn = (heaterOn == 0U) ? 1U : 0U;
+        if (heaterOn == 0U) {
+          autoPulseCount++;
+          if (autoPulseCount >= airRemovalCycles) {
+            AutoEnterPhase(AUTO_PHASE_HEATING_RAMP, now);
+          }
+        }
+      }
+      break;
+
+    case AUTO_PHASE_HEATING_RAMP:
+      heaterOn = 1U;
+      pumpOn = 0U;
+      valeOn = 0U;
+      if (elapsed >= heatingRampDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_STERILIZATION_HOLD, now);
+      }
+      break;
+
+    case AUTO_PHASE_STERILIZATION_HOLD:
+      pumpOn = 0U;
+      valeOn = 0U;
+      holdPeriodPos = elapsed % holdHeaterPeriodMs;
+      heaterOn = (holdPeriodPos < holdHeaterOnMs) ? 1U : 0U;
+      if (elapsed >= sterilizationHoldDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_EXHAUST, now);
+      }
+      break;
+
+    case AUTO_PHASE_EXHAUST:
+      heaterOn = 0U;
+      pumpOn = 1U;
+      valeOn = 0U;
+      if (elapsed >= exhaustDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_DRYING, now);
+      }
+      break;
+
+    case AUTO_PHASE_DRYING:
+      pumpOn = 1U;
+      valeOn = 0U;
+      if ((now - autoLastToggleTick) >= dryingPulseMs) {
+        autoLastToggleTick = now;
+        heaterOn = (heaterOn == 0U) ? 1U : 0U;
+        if (heaterOn == 0U) {
+          autoPulseCount++;
+          if (autoPulseCount >= dryingCycles) {
+            AutoEnterPhase(AUTO_PHASE_COMPLETE, now);
+          }
+        }
+      }
+      break;
+
+    case AUTO_PHASE_COMPLETE:
+    default:
+      heaterOn = 0U;
+      pumpOn = 0U;
+      valeOn = 0U;
+      autoRunning = 0U;
+      SetAutoIndicator(0U);
+      SetStopIndicator(1U);
+      break;
+  }
+
+  SetHeater(heaterOn);
+  SetPump(pumpOn);
+  SetVale(valeOn);
+  if (autoRunning != 0U) {
+    SetAutoIndicator(1U);
+    SetStopIndicator(0U);
+  }
+}
+
+static void AutoEnterPhase(AutoPhase nextPhase, uint32_t now)
+{
+  autoPhase = nextPhase;
+  autoPhaseStartTick = now;
+  autoLastToggleTick = now;
+  autoPulseCount = 0U;
+
+  if (nextPhase == AUTO_PHASE_AIR_REMOVAL || nextPhase == AUTO_PHASE_DRYING) {
+    heaterOn = 1U;
+  }
+  else {
+    heaterOn = 0U;
+  }
+}
+
+static void AutoResetCycle(void)
+{
+  autoPhase = AUTO_PHASE_IDLE;
+  autoPhaseStartTick = 0U;
+  autoLastToggleTick = 0U;
+  autoPulseCount = 0U;
+  autoRunning = 0U;
+  heaterOn = 0U;
+  pumpOn = 0U;
+  valeOn = 0U;
+  SetHeater(0U);
+  SetPump(0U);
+  SetVale(0U);
+  SetAutoIndicator(0U);
+  SetStopIndicator(0U);
+}
+
+static void StartAutoCycle(uint32_t now)
+{
+  AutoResetCycle();
+  autoRunning = 1U;
+  AutoEnterPhase(AUTO_PHASE_FILL_WATER, now);
   SetAutoIndicator(1U);
+  SetStopIndicator(0U);
+}
+
+static void StopAutoCycle(void)
+{
+  AutoResetCycle();
+  SetStopIndicator(1U);
 }
 
 static void UpdateTemperatureDisplay(uint32_t now)
@@ -219,11 +383,7 @@ int main(void)
   ButtonInput_Init(&buttonAuto, B_AUTO_GPIO_Port, B_AUTO_Pin, GPIO_PIN_SET);
   ButtonInput_Init(&buttonStop, B_STOP_GPIO_Port, B_STOP_Pin, GPIO_PIN_SET);
 
-  SetHeater(0U);
-  SetPump(0U);
-  SetVale(0U);
-  SetAutoIndicator(0U);
-  SetStopIndicator(0U);
+  AutoResetCycle();
   tm1637Init(&tm1637, TM1637_DISPLAY_1);
   tm1637SetBrightness(&tm1637, 7);
 
@@ -248,6 +408,9 @@ int main(void)
     const uint32_t longPressMs = 600U;
     const uint32_t repeatMs = 200U;
 
+    /* Temperature sampling/display is always executed independently of mode. */
+    UpdateTemperatureDisplay(now);
+
     ButtonInput_Update(&buttonHeater, now, debounceMs, longPressMs, repeatMs);
     ButtonInput_Update(&buttonPump, now, debounceMs, longPressMs, repeatMs);
     ButtonInput_Update(&buttonVale, now, debounceMs, longPressMs, repeatMs);
@@ -255,22 +418,12 @@ int main(void)
     ButtonInput_Update(&buttonStop, now, debounceMs, longPressMs, repeatMs);
 
     if (ButtonInput_ConsumePressed(&buttonAuto) != 0U) {
-    	autoRunning = 1U;
-        SetAutoIndicator(1U);
-        SetStopIndicator(0U);
+      StartAutoCycle(now);
     }
 
     if (ButtonInput_ConsumePressed(&buttonStop) != 0U) {
-        autoRunning = 0U;
-        heaterOn = 0U;
-        pumpOn = 0U;
-        valeOn = 0U;
-        SetHeater(0U);
-        SetPump(0U);
-        SetVale(0U);
-        SetAutoIndicator(0U);
-        SetStopIndicator(1U);
-     }
+      StopAutoCycle();
+    }
 
      if (autoRunning != 0U) {
         HandleAutoMode(now);
@@ -278,8 +431,6 @@ int main(void)
      else {
         HandleManualMode();
      }
-
-     UpdateTemperatureDisplay(now);
   }
   /* USER CODE END 3 */
 }
