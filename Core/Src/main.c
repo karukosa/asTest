@@ -25,6 +25,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "button_input.h"
+#include "max31865.h"
+#include "tm1637.h"
 
 /* USER CODE END Includes */
 
@@ -58,6 +60,14 @@ static ButtonInput buttonAuto;
 static ButtonInput buttonStop;
 
 static uint8_t autoRunning = 0U;
+static uint8_t heaterOn = 0U;
+static uint8_t pumpOn = 0U;
+static uint8_t valeOn = 0U;
+
+static Max31865Handle pt100;
+static TM1637Handle tm1637;
+static uint32_t lastTempReadTick = 0U;
+static uint8_t tempSensorReady = 0U;
 
 /* USER CODE END PV */
 
@@ -77,6 +87,7 @@ static void SetAutoIndicator(uint8_t on);
 static void SetStopIndicator(uint8_t on);
 static void HandleManualMode(void);
 static void HandleAutoMode(uint32_t now);
+static void UpdateTemperatureDisplay(uint32_t now);
 
 /* USER CODE END PFP */
 
@@ -116,24 +127,18 @@ static void SetStopIndicator(uint8_t on)
 static void HandleManualMode(void)
 {
   if (ButtonInput_ConsumePressed(&buttonHeater) != 0U) {
-    SetHeater(1U);
-  }
-  if (ButtonInput_ConsumeReleased(&buttonHeater) != 0U) {
-    SetHeater(0U);
+    heaterOn = (heaterOn == 0U) ? 1U : 0U;
+    SetHeater(heaterOn);
   }
 
   if (ButtonInput_ConsumePressed(&buttonPump) != 0U) {
-    SetPump(1U);
-  }
-  if (ButtonInput_ConsumeReleased(&buttonPump) != 0U) {
-    SetPump(0U);
+    pumpOn = (pumpOn == 0U) ? 1U : 0U;
+    SetPump(pumpOn);
   }
 
   if (ButtonInput_ConsumePressed(&buttonVale) != 0U) {
-    SetVale(1U);
-  }
-  if (ButtonInput_ConsumeReleased(&buttonVale) != 0U) {
-    SetVale(0U);
+    valeOn = (valeOn == 0U) ? 1U : 0U;
+    SetVale(valeOn);
   }
 
   SetStopIndicator(0U);
@@ -147,6 +152,30 @@ static void HandleAutoMode(uint32_t now)
    * Keep autoRunning = 1 while sequence is active.
    */
   SetAutoIndicator(1U);
+}
+
+static void UpdateTemperatureDisplay(uint32_t now)
+{
+  const uint32_t tempReadPeriodMs = 500U;
+  int16_t temperatureTenths = 0;
+
+  if ((now - lastTempReadTick) < tempReadPeriodMs) {
+    return;
+  }
+
+  lastTempReadTick = now;
+
+  if (tempSensorReady == 0U) {
+    tm1637DisplayDecimal(&tm1637, 0, 0);
+    return;
+  }
+
+  if (Max31865_ReadTemperatureTenthsC(&pt100, &temperatureTenths) != 0U) {
+    tm1637DisplayDecimalTenths(&tm1637, (int)temperatureTenths);
+  }
+  else {
+    tm1637DisplayDecimal(&tm1637, 0, 0);
+  }
 }
 
 /* USER CODE END 0 */
@@ -195,6 +224,14 @@ int main(void)
   SetVale(0U);
   SetAutoIndicator(0U);
   SetStopIndicator(0U);
+  tm1637Init(&tm1637, TM1637_DISPLAY_1);
+  tm1637SetBrightness(&tm1637, 7);
+
+  Max31865_Init(&pt100, &hspi1, CS_MAX_GPIO_Port, CS_MAX_Pin, 430.0f, 100.0f);
+  tempSensorReady = Max31865_Begin(&pt100, MAX31865_3WIRE, 1U);
+  if (tempSensorReady == 0U) {
+    tm1637Clear(&tm1637);
+  }
 
   /* USER CODE END 2 */
 
@@ -225,6 +262,9 @@ int main(void)
 
     if (ButtonInput_ConsumePressed(&buttonStop) != 0U) {
         autoRunning = 0U;
+        heaterOn = 0U;
+        pumpOn = 0U;
+        valeOn = 0U;
         SetHeater(0U);
         SetPump(0U);
         SetVale(0U);
@@ -238,6 +278,8 @@ int main(void)
      else {
         HandleManualMode();
      }
+
+     UpdateTemperatureDisplay(now);
   }
   /* USER CODE END 3 */
 }
