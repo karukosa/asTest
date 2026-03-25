@@ -274,16 +274,9 @@ static void tm1637DioLow(TM1637Handle *handle)
 
 static void tm1637AssignPins(TM1637Handle *handle, TM1637Display display)
 {
-    if (display == TM1637_DISPLAY_2) {
-        handle->clkPort = CLK2_GPIO_Port;
-        handle->clkPin = CLK2_Pin;
-        handle->dioPort = DIO2_GPIO_Port;
-        handle->dioPin = DIO2_Pin;
-    }
-    else {
-        handle->clkPort = CLK1_GPIO_Port;
-        handle->clkPin = CLK1_Pin;
-        handle->dioPort = DIO1_GPIO_Port;
-        handle->dioPin = DIO1_Pin;
-    }
+    (void)display;
+    handle->clkPort = CLK_GPIO_Port;
+    handle->clkPin = CLK_Pin;
+    handle->dioPort = DIO_GPIO_Port;
+    handle->dioPin = DIO_Pin;
 }
