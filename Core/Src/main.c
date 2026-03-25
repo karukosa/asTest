@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "button_input.h"
 
 /* USER CODE END Includes */
 
@@ -50,6 +51,13 @@ I2S_HandleTypeDef hi2s3;
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
+static ButtonInput buttonHeater;
+static ButtonInput buttonPump;
+static ButtonInput buttonVale;
+static ButtonInput buttonAuto;
+static ButtonInput buttonStop;
+
+static uint8_t autoRunning = 0U;
 
 /* USER CODE END PV */
 
@@ -62,11 +70,84 @@ static void MX_SPI1_Init(void);
 void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
+static void SetHeater(uint8_t on);
+static void SetPump(uint8_t on);
+static void SetVale(uint8_t on);
+static void SetAutoIndicator(uint8_t on);
+static void SetStopIndicator(uint8_t on);
+static void HandleManualMode(void);
+static void HandleAutoMode(uint32_t now);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void SetHeater(uint8_t on)
+{
+  GPIO_PinState pinState = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(SSR_HEATER_GPIO_Port, SSR_HEATER_Pin, pinState);
+  HAL_GPIO_WritePin(LED_HEATER_GPIO_Port, LED_HEATER_Pin, pinState);
+}
+
+static void SetPump(uint8_t on)
+{
+  GPIO_PinState pinState = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(RELAY_PUMP_GPIO_Port, RELAY_PUMP_Pin, pinState);
+  HAL_GPIO_WritePin(LED_PUMP_GPIO_Port, LED_PUMP_Pin, pinState);
+}
+
+static void SetVale(uint8_t on)
+{
+  GPIO_PinState pinState = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(RELAY_VALE_GPIO_Port, RELAY_VALE_Pin, pinState);
+  HAL_GPIO_WritePin(LED_VALE_GPIO_Port, LED_VALE_Pin, pinState);
+}
+
+static void SetAutoIndicator(uint8_t on)
+{
+  HAL_GPIO_WritePin(LED_AUTO_GPIO_Port, LED_AUTO_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void SetStopIndicator(uint8_t on)
+{
+  HAL_GPIO_WritePin(LED_STOP_GPIO_Port, LED_STOP_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void HandleManualMode(void)
+{
+  if (ButtonInput_ConsumePressed(&buttonHeater) != 0U) {
+    SetHeater(1U);
+  }
+  if (ButtonInput_ConsumeReleased(&buttonHeater) != 0U) {
+    SetHeater(0U);
+  }
+
+  if (ButtonInput_ConsumePressed(&buttonPump) != 0U) {
+    SetPump(1U);
+  }
+  if (ButtonInput_ConsumeReleased(&buttonPump) != 0U) {
+    SetPump(0U);
+  }
+
+  if (ButtonInput_ConsumePressed(&buttonVale) != 0U) {
+    SetVale(1U);
+  }
+  if (ButtonInput_ConsumeReleased(&buttonVale) != 0U) {
+    SetVale(0U);
+  }
+
+  SetStopIndicator(0U);
+}
+
+static void HandleAutoMode(uint32_t now)
+{
+  (void)now;
+  /*
+   * TODO: Add your automatic sequence here.
+   * Keep autoRunning = 1 while sequence is active.
+   */
+  SetAutoIndicator(1U);
+}
 
 /* USER CODE END 0 */
 
@@ -103,6 +184,17 @@ int main(void)
   MX_SPI1_Init();
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 2 */
+  ButtonInput_Init(&buttonHeater, B_HEATER_GPIO_Port, B_HEATER_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonPump, B_PUMP_GPIO_Port, B_PUMP_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonVale, B_VALE_GPIO_Port, B_VALE_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonAuto, B_AUTO_GPIO_Port, B_AUTO_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonStop, B_STOP_GPIO_Port, B_STOP_Pin, GPIO_PIN_SET);
+
+  SetHeater(0U);
+  SetPump(0U);
+  SetVale(0U);
+  SetAutoIndicator(0U);
+  SetStopIndicator(0U);
 
   /* USER CODE END 2 */
 
@@ -114,6 +206,38 @@ int main(void)
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
+    uint32_t now = HAL_GetTick();
+    const uint32_t debounceMs = 30U;
+    const uint32_t longPressMs = 600U;
+    const uint32_t repeatMs = 200U;
+
+    ButtonInput_Update(&buttonHeater, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonPump, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonVale, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonAuto, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonStop, now, debounceMs, longPressMs, repeatMs);
+
+    if (ButtonInput_ConsumePressed(&buttonAuto) != 0U) {
+    	autoRunning = 1U;
+        SetAutoIndicator(1U);
+        SetStopIndicator(0U);
+    }
+
+    if (ButtonInput_ConsumePressed(&buttonStop) != 0U) {
+        autoRunning = 0U;
+        SetHeater(0U);
+        SetPump(0U);
+        SetVale(0U);
+        SetAutoIndicator(0U);
+        SetStopIndicator(1U);
+     }
+
+     if (autoRunning != 0U) {
+        HandleAutoMode(now);
+     }
+     else {
+        HandleManualMode();
+     }
   }
   /* USER CODE END 3 */
 }
@@ -289,7 +413,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, CS_I2C_SPI_Pin|SSR_HEATER_Pin|RELAY_VALE_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, CS_I2C_SPI_Pin|SSR_HEATER_Pin|RELAY_PUMP_Pin|RELAY_VALE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(OTG_FS_PowerSwitchOn_GPIO_Port, OTG_FS_PowerSwitchOn_Pin, GPIO_PIN_SET);
@@ -305,8 +429,8 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, CLK_Pin|DIO_Pin|BUZZER_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : CS_I2C_SPI_Pin SSR_HEATER_Pin RELAY_VALE_Pin */
-  GPIO_InitStruct.Pin = CS_I2C_SPI_Pin|SSR_HEATER_Pin|RELAY_VALE_Pin;
+  /*Configure GPIO pins : CS_I2C_SPI_Pin SSR_HEATER_Pin RELAY_PUMP_Pin RELAY_VALE_Pin */
+  GPIO_InitStruct.Pin = CS_I2C_SPI_Pin|SSR_HEATER_Pin|RELAY_PUMP_Pin|RELAY_VALE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -338,12 +462,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(BOOT1_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : RELAY_PUMP_Pin */
-  GPIO_InitStruct.Pin = RELAY_PUMP_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(RELAY_PUMP_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : CLK_IN_Pin */
   GPIO_InitStruct.Pin = CLK_IN_Pin;
