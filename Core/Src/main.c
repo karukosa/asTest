@@ -432,9 +432,11 @@ int main(void)
       StopAutoCycle();
     }
 
-    if (latestTemperatureValid != 0U && latestTemperatureTenths >= emergencyStopTemperatureTenths) {
-          StopAutoCycle();
-        }
+    if (autoRunning != 0U &&
+        latestTemperatureValid != 0U &&
+        latestTemperatureTenths >= emergencyStopTemperatureTenths) {
+        StopAutoCycle();
+    }
 
     if (autoRunning != 0U) {
         HandleAutoMode(now);
