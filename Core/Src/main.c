@@ -156,23 +156,25 @@ static void UpdateActuatorIndicators(void)
 
 static void HandleManualMode(void)
 {
+  uint8_t anyManualOutputOn = 0U;
+
   if (ButtonInput_ConsumePressed(&buttonHeater) != 0U) {
     heaterOn = (heaterOn == 0U) ? 1U : 0U;
     SetHeater(heaterOn);
-    SetStopIndicator(0U);
   }
 
   if (ButtonInput_ConsumePressed(&buttonPump) != 0U) {
     pumpOn = (pumpOn == 0U) ? 1U : 0U;
     SetPump(pumpOn);
-    SetStopIndicator(0U);
   }
 
   if (ButtonInput_ConsumePressed(&buttonVale) != 0U) {
     valeOn = (valeOn == 0U) ? 1U : 0U;
     SetVale(valeOn);
-    SetStopIndicator(0U);
   }
+
+  anyManualOutputOn = (uint8_t)((heaterOn != 0U) || (pumpOn != 0U) || (valeOn != 0U));
+  SetStopIndicator(anyManualOutputOn == 0U ? 1U : 0U);
 }
 
 static void HandleAutoMode(uint32_t now)
@@ -314,7 +316,7 @@ static void AutoResetCycle(void)
   SetPump(0U);
   SetVale(0U);
   SetAutoIndicator(0U);
-  SetStopIndicator(0U);
+  SetStopIndicator(1U);
 }
 
 static void StartAutoCycle(uint32_t now)
@@ -466,9 +468,9 @@ int main(void)
           StartAutoCycle(now);
     }
 
-    if (IsStopRequested() != 0U) {
+    if (autoRunning != 0U && IsStopRequested() != 0U) {
           StopAutoCycle();
-    }
+        }
 
     if (autoRunning != 0U &&
         latestTemperatureValid != 0U &&
