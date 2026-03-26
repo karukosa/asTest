@@ -353,6 +353,7 @@ static void StartAutoCycle(uint32_t now)
   AutoResetCycle();
   autoRunning = 1U;
   AutoEnterPhase(AUTO_PHASE_FILL_WATER, now);
+  TriggerBuzzer(now, 200U);
   SetAutoIndicator(1U);
   SetStopIndicator(0U);
 }
