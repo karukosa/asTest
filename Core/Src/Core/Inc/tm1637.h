@@ -29,4 +29,5 @@ void tm1637DisplayTime(TM1637Handle *handle, int hours, int minutes, int showCol
 void tm1637SetBrightness(TM1637Handle *handle, char brightness);
 void tm1637Clear(TM1637Handle *handle);
 
+
 #endif /* INC_TM1637_H_ */

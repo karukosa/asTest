@@ -14,7 +14,7 @@
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
-  *
+  * This code was created by Vu Nam Hung aka Karukosa
   *
   */
 /* USER CODE END Header */
@@ -24,6 +24,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "button_input.h"
+#include "max31865.h"
+#include "tm1637.h"
 
 /* USER CODE END Includes */
 
@@ -50,6 +53,39 @@ I2S_HandleTypeDef hi2s3;
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
+static ButtonInput buttonHeater;
+static ButtonInput buttonPump;
+static ButtonInput buttonVale;
+static ButtonInput buttonAuto;
+static ButtonInput buttonStop;
+
+static uint8_t autoRunning = 0U;
+static uint8_t heaterOn = 0U;
+static uint8_t pumpOn = 0U;
+static uint8_t valeOn = 0U;
+
+static Max31865Handle pt100;
+static TM1637Handle tm1637;
+static uint32_t lastTempReadTick = 0U;
+static uint8_t tempSensorReady = 0U;
+static int16_t latestTemperatureTenths = 0;
+static uint8_t latestTemperatureValid = 0U;
+
+typedef enum {
+  AUTO_PHASE_IDLE = 0,
+  AUTO_PHASE_FILL_WATER,
+  AUTO_PHASE_AIR_REMOVAL,
+  AUTO_PHASE_HEATING_RAMP,
+  AUTO_PHASE_STERILIZATION_HOLD,
+  AUTO_PHASE_EXHAUST,
+  AUTO_PHASE_DRYING,
+  AUTO_PHASE_COMPLETE
+} AutoPhase;
+
+static AutoPhase autoPhase = AUTO_PHASE_IDLE;
+static uint32_t autoPhaseStartTick = 0U;
+static uint32_t autoLastToggleTick = 0U;
+static uint8_t autoPulseCount = 0U;
 
 /* USER CODE END PV */
 
@@ -62,11 +98,265 @@ static void MX_SPI1_Init(void);
 void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
+static void SetHeater(uint8_t on);
+static void SetPump(uint8_t on);
+static void SetVale(uint8_t on);
+static void SetAutoIndicator(uint8_t on);
+static void SetStopIndicator(uint8_t on);
+static void UpdateActuatorIndicators(void);
+static void HandleManualMode(void);
+static void HandleAutoMode(uint32_t now);
+static void UpdateTemperatureDisplay(uint32_t now);
+static void AutoEnterPhase(AutoPhase nextPhase, uint32_t now);
+static void AutoResetCycle(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void SetHeater(uint8_t on)
+{
+  GPIO_PinState pinState = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(SSR_HEATER_GPIO_Port, SSR_HEATER_Pin, pinState);
+  HAL_GPIO_WritePin(LED_HEATER_GPIO_Port, LED_HEATER_Pin, pinState);
+}
+
+static void SetPump(uint8_t on)
+{
+  GPIO_PinState pinState = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(RELAY_PUMP_GPIO_Port, RELAY_PUMP_Pin, pinState);
+  HAL_GPIO_WritePin(LED_PUMP_GPIO_Port, LED_PUMP_Pin, pinState);
+}
+
+static void SetVale(uint8_t on)
+{
+  GPIO_PinState pinState = on ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(RELAY_VALE_GPIO_Port, RELAY_VALE_Pin, pinState);
+  HAL_GPIO_WritePin(LED_VALE_GPIO_Port, LED_VALE_Pin, pinState);
+}
+
+static void SetAutoIndicator(uint8_t on)
+{
+  HAL_GPIO_WritePin(LED_AUTO_GPIO_Port, LED_AUTO_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void SetStopIndicator(uint8_t on)
+{
+  HAL_GPIO_WritePin(LED_STOP_GPIO_Port, LED_STOP_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void UpdateActuatorIndicators(void)
+{
+  HAL_GPIO_WritePin(LED_HEATER_GPIO_Port, LED_HEATER_Pin, heaterOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_PUMP_GPIO_Port, LED_PUMP_Pin, pumpOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_VALE_GPIO_Port, LED_VALE_Pin, valeOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void HandleManualMode(void)
+{
+  if (ButtonInput_ConsumePressed(&buttonHeater) != 0U) {
+    heaterOn = (heaterOn == 0U) ? 1U : 0U;
+    SetHeater(heaterOn);
+    SetStopIndicator(0U);
+  }
+
+  if (ButtonInput_ConsumePressed(&buttonPump) != 0U) {
+    pumpOn = (pumpOn == 0U) ? 1U : 0U;
+    SetPump(pumpOn);
+    SetStopIndicator(0U);
+  }
+
+  if (ButtonInput_ConsumePressed(&buttonVale) != 0U) {
+    valeOn = (valeOn == 0U) ? 1U : 0U;
+    SetVale(valeOn);
+    SetStopIndicator(0U);
+  }
+}
+
+static void HandleAutoMode(uint32_t now)
+{
+  const uint32_t fillWaterDurationMs = 5000U;
+  const uint32_t airRemovalPulseMs = 1000U;
+  const uint8_t airRemovalCycles = 3U;
+  const uint32_t heatingRampDurationMs = 10000U;
+  const uint32_t sterilizationHoldDurationMs = 20000U;
+  const uint32_t holdHeaterPeriodMs = 1000U;
+  const uint32_t holdHeaterOnMs = 600U;
+  const uint32_t exhaustDurationMs = 6000U;
+  const uint32_t dryingPulseMs = 1200U;
+  const uint8_t dryingCycles = 3U;
+  uint32_t elapsed = now - autoPhaseStartTick;
+  uint32_t holdPeriodPos = 0U;
+
+  switch (autoPhase) {
+    case AUTO_PHASE_IDLE:
+      heaterOn = 0U;
+      pumpOn = 0U;
+      valeOn = 0U;
+      break;
+
+    case AUTO_PHASE_FILL_WATER:
+      heaterOn = 0U;
+      pumpOn = 0U;
+      valeOn = 1U;
+      if (elapsed >= fillWaterDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_AIR_REMOVAL, now);
+      }
+      break;
+
+    case AUTO_PHASE_AIR_REMOVAL:
+      pumpOn = 1U;
+      valeOn = 0U;
+      if ((now - autoLastToggleTick) >= airRemovalPulseMs) {
+        autoLastToggleTick = now;
+        heaterOn = (heaterOn == 0U) ? 1U : 0U;
+        if (heaterOn == 0U) {
+          autoPulseCount++;
+          if (autoPulseCount >= airRemovalCycles) {
+            AutoEnterPhase(AUTO_PHASE_HEATING_RAMP, now);
+          }
+        }
+      }
+      break;
+
+    case AUTO_PHASE_HEATING_RAMP:
+      heaterOn = 1U;
+      pumpOn = 0U;
+      valeOn = 0U;
+      if (elapsed >= heatingRampDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_STERILIZATION_HOLD, now);
+      }
+      break;
+
+    case AUTO_PHASE_STERILIZATION_HOLD:
+      pumpOn = 0U;
+      valeOn = 0U;
+      holdPeriodPos = elapsed % holdHeaterPeriodMs;
+      heaterOn = (holdPeriodPos < holdHeaterOnMs) ? 1U : 0U;
+      if (elapsed >= sterilizationHoldDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_EXHAUST, now);
+      }
+      break;
+
+    case AUTO_PHASE_EXHAUST:
+      heaterOn = 0U;
+      pumpOn = 1U;
+      valeOn = 0U;
+      if (elapsed >= exhaustDurationMs) {
+        AutoEnterPhase(AUTO_PHASE_DRYING, now);
+      }
+      break;
+
+    case AUTO_PHASE_DRYING:
+      pumpOn = 1U;
+      valeOn = 0U;
+      if ((now - autoLastToggleTick) >= dryingPulseMs) {
+        autoLastToggleTick = now;
+        heaterOn = (heaterOn == 0U) ? 1U : 0U;
+        if (heaterOn == 0U) {
+          autoPulseCount++;
+          if (autoPulseCount >= dryingCycles) {
+            AutoEnterPhase(AUTO_PHASE_COMPLETE, now);
+          }
+        }
+      }
+      break;
+
+    case AUTO_PHASE_COMPLETE:
+    default:
+      heaterOn = 0U;
+      pumpOn = 0U;
+      valeOn = 0U;
+      autoRunning = 0U;
+      SetAutoIndicator(0U);
+      SetStopIndicator(1U);
+      break;
+  }
+
+  SetHeater(heaterOn);
+  SetPump(pumpOn);
+  SetVale(valeOn);
+  UpdateActuatorIndicators();
+  if (autoRunning != 0U) {
+      SetAutoIndicator(1U);
+      SetStopIndicator(0U);
+  }
+}
+
+static void AutoEnterPhase(AutoPhase nextPhase, uint32_t now)
+{
+  autoPhase = nextPhase;
+  autoPhaseStartTick = now;
+  autoLastToggleTick = now;
+  autoPulseCount = 0U;
+
+  if (nextPhase == AUTO_PHASE_AIR_REMOVAL || nextPhase == AUTO_PHASE_DRYING) {
+    heaterOn = 1U;
+  }
+  else {
+    heaterOn = 0U;
+  }
+}
+
+static void AutoResetCycle(void)
+{
+  autoPhase = AUTO_PHASE_IDLE;
+  autoPhaseStartTick = 0U;
+  autoLastToggleTick = 0U;
+  autoPulseCount = 0U;
+  autoRunning = 0U;
+  heaterOn = 0U;
+  pumpOn = 0U;
+  valeOn = 0U;
+  SetHeater(0U);
+  SetPump(0U);
+  SetVale(0U);
+  SetAutoIndicator(0U);
+  SetStopIndicator(0U);
+}
+
+static void StartAutoCycle(uint32_t now)
+{
+  AutoResetCycle();
+  autoRunning = 1U;
+  AutoEnterPhase(AUTO_PHASE_FILL_WATER, now);
+  SetAutoIndicator(1U);
+  SetStopIndicator(0U);
+}
+
+static void StopAutoCycle(void)
+{
+  AutoResetCycle();
+  SetStopIndicator(1U);
+}
+
+static void UpdateTemperatureDisplay(uint32_t now)
+{
+  const uint32_t tempReadPeriodMs = 500U;
+  int16_t temperatureTenths = 0;
+
+  if ((now - lastTempReadTick) < tempReadPeriodMs) {
+    return;
+  }
+
+  lastTempReadTick = now;
+
+  if (tempSensorReady == 0U) {
+	latestTemperatureValid = 0U;
+    tm1637DisplayDecimal(&tm1637, 0, 0);
+    return;
+  }
+
+  if (Max31865_ReadTemperatureTenthsC(&pt100, &temperatureTenths) != 0U) {
+	latestTemperatureTenths = temperatureTenths;
+	latestTemperatureValid = 1U;
+    tm1637DisplayDecimalTenths(&tm1637, (int)temperatureTenths);
+  }
+  else {
+	latestTemperatureValid = 0U;
+    tm1637DisplayDecimal(&tm1637, 0, 0);
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -103,6 +393,21 @@ int main(void)
   MX_SPI1_Init();
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 2 */
+  ButtonInput_Init(&buttonHeater, B_HEATER_GPIO_Port, B_HEATER_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonPump, B_PUMP_GPIO_Port, B_PUMP_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonVale, B_VALE_GPIO_Port, B_VALE_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonAuto, B_AUTO_GPIO_Port, B_AUTO_Pin, GPIO_PIN_SET);
+  ButtonInput_Init(&buttonStop, B_STOP_GPIO_Port, B_STOP_Pin, GPIO_PIN_SET);
+
+  AutoResetCycle();
+  tm1637Init(&tm1637, TM1637_DISPLAY_1);
+  tm1637SetBrightness(&tm1637, 7);
+
+  Max31865_Init(&pt100, &hspi1, CS_MAX_GPIO_Port, CS_MAX_Pin, 430.0f, 100.0f);
+  tempSensorReady = Max31865_Begin(&pt100, MAX31865_3WIRE, 1U);
+  if (tempSensorReady == 0U) {
+    tm1637Clear(&tm1637);
+  }
 
   /* USER CODE END 2 */
 
@@ -114,6 +419,41 @@ int main(void)
     MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
+    uint32_t now = HAL_GetTick();
+    const uint32_t debounceMs = 30U;
+    const uint32_t longPressMs = 600U;
+    const uint32_t repeatMs = 200U;
+    const int16_t emergencyStopTemperatureTenths = 1350;
+
+    /* Temperature sampling/display is always executed independently of mode. */
+    UpdateTemperatureDisplay(now);
+
+    ButtonInput_Update(&buttonHeater, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonPump, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonVale, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonAuto, now, debounceMs, longPressMs, repeatMs);
+    ButtonInput_Update(&buttonStop, now, debounceMs, longPressMs, repeatMs);
+
+    if (ButtonInput_ConsumePressed(&buttonAuto) != 0U && autoRunning == 0U){
+      StartAutoCycle(now);
+    }
+
+    if (ButtonInput_ConsumePressed(&buttonStop) != 0U) {
+      StopAutoCycle();
+    }
+
+    if (autoRunning != 0U &&
+        latestTemperatureValid != 0U &&
+        latestTemperatureTenths >= emergencyStopTemperatureTenths) {
+        StopAutoCycle();
+    }
+
+    if (autoRunning != 0U) {
+        HandleAutoMode(now);
+    }
+    else {
+        HandleManualMode();
+    }
   }
   /* USER CODE END 3 */
 }
