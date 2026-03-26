@@ -70,6 +70,8 @@ static uint32_t lastTempReadTick = 0U;
 static uint8_t tempSensorReady = 0U;
 static int16_t latestTemperatureTenths = 0;
 static uint8_t latestTemperatureValid = 0U;
+static uint8_t buzzerOn = 0U;
+static uint32_t buzzerOffTick = 0U;
 
 typedef enum {
   AUTO_PHASE_IDLE = 0,
@@ -103,6 +105,9 @@ static void SetPump(uint8_t on);
 static void SetVale(uint8_t on);
 static void SetAutoIndicator(uint8_t on);
 static void SetStopIndicator(uint8_t on);
+static void SetBuzzer(uint8_t on);
+static void TriggerBuzzer(uint32_t now, uint32_t durationMs);
+static void UpdateBuzzer(uint32_t now);
 static void UpdateActuatorIndicators(void);
 static void HandleManualMode(void);
 static void HandleAutoMode(uint32_t now);
@@ -147,6 +152,25 @@ static void SetStopIndicator(uint8_t on)
   HAL_GPIO_WritePin(LED_STOP_GPIO_Port, LED_STOP_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
+static void SetBuzzer(uint8_t on)
+{
+  buzzerOn = on;
+  HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void TriggerBuzzer(uint32_t now, uint32_t durationMs)
+{
+  SetBuzzer(1U);
+  buzzerOffTick = now + durationMs;
+}
+
+static void UpdateBuzzer(uint32_t now)
+{
+  if (buzzerOn != 0U && (int32_t)(now - buzzerOffTick) >= 0) {
+    SetBuzzer(0U);
+  }
+}
+
 static void UpdateActuatorIndicators(void)
 {
   HAL_GPIO_WritePin(LED_HEATER_GPIO_Port, LED_HEATER_Pin, heaterOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
@@ -161,16 +185,19 @@ static void HandleManualMode(void)
   if (ButtonInput_ConsumePressed(&buttonHeater) != 0U) {
     heaterOn = (heaterOn == 0U) ? 1U : 0U;
     SetHeater(heaterOn);
+    TriggerBuzzer(HAL_GetTick(), 200U);
   }
 
   if (ButtonInput_ConsumePressed(&buttonPump) != 0U) {
     pumpOn = (pumpOn == 0U) ? 1U : 0U;
     SetPump(pumpOn);
+    TriggerBuzzer(HAL_GetTick(), 200U);
   }
 
   if (ButtonInput_ConsumePressed(&buttonVale) != 0U) {
     valeOn = (valeOn == 0U) ? 1U : 0U;
     SetVale(valeOn);
+    TriggerBuzzer(HAL_GetTick(), 200U);
   }
 
   anyManualOutputOn = (uint8_t)((heaterOn != 0U) || (pumpOn != 0U) || (valeOn != 0U));
@@ -182,8 +209,8 @@ static void HandleAutoMode(uint32_t now)
   const uint32_t fillWaterDurationMs = 5000U;
   const uint32_t airRemovalPulseMs = 1000U;
   const uint8_t airRemovalCycles = 3U;
-  const uint32_t heatingRampDurationMs = 10000U;
-  const uint32_t sterilizationHoldDurationMs = 20000U;
+  const uint32_t heatingRampDurationMs = 8000U;
+  const uint32_t sterilizationHoldDurationMs = 10000U;
   const uint32_t holdHeaterPeriodMs = 1000U;
   const uint32_t holdHeaterOnMs = 600U;
   const uint32_t exhaustDurationMs = 6000U;
@@ -209,16 +236,17 @@ static void HandleAutoMode(uint32_t now)
       break;
 
     case AUTO_PHASE_AIR_REMOVAL:
-      pumpOn = 1U;
       valeOn = 0U;
+      pumpOn = (heaterOn == 0U) ? 1U : 0U;
       if ((now - autoLastToggleTick) >= airRemovalPulseMs) {
-        autoLastToggleTick = now;
-        heaterOn = (heaterOn == 0U) ? 1U : 0U;
-        if (heaterOn == 0U) {
-          autoPulseCount++;
-          if (autoPulseCount >= airRemovalCycles) {
-            AutoEnterPhase(AUTO_PHASE_HEATING_RAMP, now);
-          }
+    	autoLastToggleTick = now;
+    	heaterOn = (heaterOn == 0U) ? 1U : 0U;
+    	pumpOn = (heaterOn == 0U) ? 1U : 0U;
+    	if (heaterOn == 0U) {
+    	  autoPulseCount++;
+    	  if (autoPulseCount >= airRemovalCycles) {
+    	  AutoEnterPhase(AUTO_PHASE_HEATING_RAMP, now);
+    	  }
         }
       }
       break;
@@ -252,7 +280,7 @@ static void HandleAutoMode(uint32_t now)
       break;
 
     case AUTO_PHASE_DRYING:
-      pumpOn = 1U;
+      pumpOn = 0U;
       valeOn = 0U;
       if ((now - autoLastToggleTick) >= dryingPulseMs) {
         autoLastToggleTick = now;
@@ -272,6 +300,7 @@ static void HandleAutoMode(uint32_t now)
       pumpOn = 0U;
       valeOn = 0U;
       autoRunning = 0U;
+      TriggerBuzzer(now, 1000U);
       SetAutoIndicator(0U);
       SetStopIndicator(1U);
       break;
@@ -330,6 +359,7 @@ static void StartAutoCycle(uint32_t now)
 
 static void StopAutoCycle(void)
 {
+  TriggerBuzzer(HAL_GetTick(), 700U);
   AutoResetCycle();
   SetStopIndicator(1U);
 }
@@ -430,6 +460,7 @@ int main(void)
   ButtonInput_Init(&buttonStop, B_STOP_GPIO_Port, B_STOP_Pin, GPIO_PIN_SET);
 
   AutoResetCycle();
+  SetBuzzer(0U);
   tm1637Init(&tm1637, TM1637_DISPLAY_1);
   tm1637SetBrightness(&tm1637, 7);
 
@@ -453,10 +484,10 @@ int main(void)
     const uint32_t debounceMs = 30U;
     const uint32_t longPressMs = 600U;
     const uint32_t repeatMs = 200U;
-    const int16_t emergencyStopTemperatureTenths = 1350;
 
     /* Temperature sampling/display is always executed independently of mode. */
     UpdateTemperatureDisplay(now);
+    UpdateBuzzer(now);
 
     ButtonInput_Update(&buttonHeater, now, debounceMs, longPressMs, repeatMs);
     ButtonInput_Update(&buttonPump, now, debounceMs, longPressMs, repeatMs);
@@ -471,12 +502,6 @@ int main(void)
     if (autoRunning != 0U && IsStopRequested() != 0U) {
           StopAutoCycle();
         }
-
-    if (autoRunning != 0U &&
-        latestTemperatureValid != 0U &&
-        latestTemperatureTenths >= emergencyStopTemperatureTenths) {
-        StopAutoCycle();
-    }
 
     if (autoRunning != 0U) {
         HandleAutoMode(now);
