@@ -68,6 +68,8 @@ static Max31865Handle pt100;
 static TM1637Handle tm1637;
 static uint32_t lastTempReadTick = 0U;
 static uint8_t tempSensorReady = 0U;
+static int16_t latestTemperatureTenths = 0;
+static uint8_t latestTemperatureValid = 0U;
 
 typedef enum {
   AUTO_PHASE_IDLE = 0,
@@ -330,14 +332,18 @@ static void UpdateTemperatureDisplay(uint32_t now)
   lastTempReadTick = now;
 
   if (tempSensorReady == 0U) {
+	latestTemperatureValid = 0U;
     tm1637DisplayDecimal(&tm1637, 0, 0);
     return;
   }
 
   if (Max31865_ReadTemperatureTenthsC(&pt100, &temperatureTenths) != 0U) {
+	latestTemperatureTenths = temperatureTenths;
+	latestTemperatureValid = 1U;
     tm1637DisplayDecimalTenths(&tm1637, (int)temperatureTenths);
   }
   else {
+	latestTemperatureValid = 0U;
     tm1637DisplayDecimal(&tm1637, 0, 0);
   }
 }
@@ -407,6 +413,7 @@ int main(void)
     const uint32_t debounceMs = 30U;
     const uint32_t longPressMs = 600U;
     const uint32_t repeatMs = 200U;
+    const int16_t emergencyStopTemperatureTenths = 1350;
 
     /* Temperature sampling/display is always executed independently of mode. */
     UpdateTemperatureDisplay(now);
@@ -417,7 +424,7 @@ int main(void)
     ButtonInput_Update(&buttonAuto, now, debounceMs, longPressMs, repeatMs);
     ButtonInput_Update(&buttonStop, now, debounceMs, longPressMs, repeatMs);
 
-    if (ButtonInput_ConsumePressed(&buttonAuto) != 0U) {
+    if (ButtonInput_ConsumePressed(&buttonAuto) != 0U && autoRunning == 0U){
       StartAutoCycle(now);
     }
 
@@ -425,12 +432,16 @@ int main(void)
       StopAutoCycle();
     }
 
-     if (autoRunning != 0U) {
+    if (latestTemperatureValid != 0U && latestTemperatureTenths >= emergencyStopTemperatureTenths) {
+          StopAutoCycle();
+        }
+
+    if (autoRunning != 0U) {
         HandleAutoMode(now);
-     }
-     else {
+    }
+    else {
         HandleManualMode();
-     }
+    }
   }
   /* USER CODE END 3 */
 }
