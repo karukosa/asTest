@@ -103,11 +103,14 @@ static void SetPump(uint8_t on);
 static void SetVale(uint8_t on);
 static void SetAutoIndicator(uint8_t on);
 static void SetStopIndicator(uint8_t on);
+static void UpdateActuatorIndicators(void);
 static void HandleManualMode(void);
 static void HandleAutoMode(uint32_t now);
 static void UpdateTemperatureDisplay(uint32_t now);
 static void AutoEnterPhase(AutoPhase nextPhase, uint32_t now);
 static void AutoResetCycle(void);
+static uint8_t IsStartAutoRequested(void);
+static uint8_t IsStopRequested(void);
 
 /* USER CODE END PFP */
 
@@ -144,24 +147,32 @@ static void SetStopIndicator(uint8_t on)
   HAL_GPIO_WritePin(LED_STOP_GPIO_Port, LED_STOP_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
+static void UpdateActuatorIndicators(void)
+{
+  HAL_GPIO_WritePin(LED_HEATER_GPIO_Port, LED_HEATER_Pin, heaterOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_PUMP_GPIO_Port, LED_PUMP_Pin, pumpOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_VALE_GPIO_Port, LED_VALE_Pin, valeOn != 0U ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
 static void HandleManualMode(void)
 {
   if (ButtonInput_ConsumePressed(&buttonHeater) != 0U) {
     heaterOn = (heaterOn == 0U) ? 1U : 0U;
     SetHeater(heaterOn);
+    SetStopIndicator(0U);
   }
 
   if (ButtonInput_ConsumePressed(&buttonPump) != 0U) {
     pumpOn = (pumpOn == 0U) ? 1U : 0U;
     SetPump(pumpOn);
+    SetStopIndicator(0U);
   }
 
   if (ButtonInput_ConsumePressed(&buttonVale) != 0U) {
     valeOn = (valeOn == 0U) ? 1U : 0U;
     SetVale(valeOn);
+    SetStopIndicator(0U);
   }
-
-  SetStopIndicator(0U);
 }
 
 static void HandleAutoMode(uint32_t now)
@@ -267,9 +278,10 @@ static void HandleAutoMode(uint32_t now)
   SetHeater(heaterOn);
   SetPump(pumpOn);
   SetVale(valeOn);
+  UpdateActuatorIndicators();
   if (autoRunning != 0U) {
-    SetAutoIndicator(1U);
-    SetStopIndicator(0U);
+      SetAutoIndicator(1U);
+      SetStopIndicator(0U);
   }
 }
 
@@ -318,6 +330,32 @@ static void StopAutoCycle(void)
 {
   AutoResetCycle();
   SetStopIndicator(1U);
+}
+
+static uint8_t IsStartAutoRequested(void)
+{
+  if (ButtonInput_ConsumePressed(&buttonAuto) != 0U) {
+    return 1U;
+  }
+
+  if (ButtonInput_ConsumeRepeat(&buttonAuto) != 0U) {
+    return 1U;
+  }
+
+  return 0U;
+}
+
+static uint8_t IsStopRequested(void)
+{
+  if (ButtonInput_ConsumePressed(&buttonStop) != 0U) {
+    return 1U;
+  }
+
+  if (ButtonInput_ConsumeRepeat(&buttonStop) != 0U) {
+    return 1U;
+  }
+
+  return 0U;
 }
 
 static void UpdateTemperatureDisplay(uint32_t now)
@@ -424,12 +462,12 @@ int main(void)
     ButtonInput_Update(&buttonAuto, now, debounceMs, longPressMs, repeatMs);
     ButtonInput_Update(&buttonStop, now, debounceMs, longPressMs, repeatMs);
 
-    if (ButtonInput_ConsumePressed(&buttonAuto) != 0U && autoRunning == 0U){
-      StartAutoCycle(now);
+    if (autoRunning == 0U && IsStartAutoRequested() != 0U) {
+          StartAutoCycle(now);
     }
 
-    if (ButtonInput_ConsumePressed(&buttonStop) != 0U) {
-      StopAutoCycle();
+    if (IsStopRequested() != 0U) {
+          StopAutoCycle();
     }
 
     if (autoRunning != 0U &&
