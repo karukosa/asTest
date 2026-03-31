@@ -116,6 +116,7 @@ static void AutoEnterPhase(AutoPhase nextPhase, uint32_t now);
 static void AutoResetCycle(void);
 static uint8_t IsStartAutoRequested(void);
 static uint8_t IsStopRequested(void);
+static void ClearAutoButtonRequests(void);
 
 /* USER CODE END PFP */
 
@@ -365,6 +366,13 @@ static void StopAutoCycle(void)
   SetStopIndicator(1U);
 }
 
+static void ClearAutoButtonRequests(void)
+{
+  (void)ButtonInput_ConsumePressed(&buttonAuto);
+  (void)ButtonInput_ConsumeRepeat(&buttonAuto);
+  (void)ButtonInput_ConsumeReleased(&buttonAuto);
+}
+
 static uint8_t IsStartAutoRequested(void)
 {
   if (ButtonInput_ConsumePressed(&buttonAuto) != 0U) {
@@ -496,21 +504,32 @@ int main(void)
     ButtonInput_Update(&buttonAuto, now, debounceMs, longPressMs, repeatMs);
     ButtonInput_Update(&buttonStop, now, debounceMs, longPressMs, repeatMs);
 
-    if (autoRunning == 0U && IsStartAutoRequested() != 0U) {
+        if (autoRunning == 0U && IsStartAutoRequested() != 0U) {
           StartAutoCycle(now);
-    }
-
-    if (autoRunning != 0U && IsStopRequested() != 0U) {
-          StopAutoCycle();
+          ClearAutoButtonRequests();
         }
 
-    if (autoRunning != 0U) {
-        HandleAutoMode(now);
-    }
-    else {
-        HandleManualMode();
-    }
-  }
+        if (IsStopRequested() != 0U) {
+          if (autoRunning != 0U) {
+            StopAutoCycle();
+          }
+          else {
+            AutoResetCycle();
+            TriggerBuzzer(now, 300U);
+          }
+          ClearAutoButtonRequests();
+        }
+
+        if (autoRunning != 0U) {
+          HandleAutoMode(now);
+          if (autoRunning == 0U) {
+            ClearAutoButtonRequests();
+          }
+        }
+        else {
+          HandleManualMode();
+        }
+      }
   /* USER CODE END 3 */
 }
 
