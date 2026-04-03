@@ -140,6 +140,15 @@ void tm1637DisplayTime(TM1637Handle *handle, int hours, int minutes, int showCol
     tm1637WriteSegments(handle, segments);
 }
 
+void tm1637DisplaySegments(TM1637Handle *handle, const uint8_t segments[4])
+{
+    if (handle == NULL || segments == NULL) {
+        return;
+    }
+
+    tm1637WriteSegments(handle, segments);
+}
+
 // Valid brightness values: 0 - 8.
 // 0 = display off.
 void tm1637SetBrightness(TM1637Handle *handle, char brightness)
@@ -274,9 +283,16 @@ static void tm1637DioLow(TM1637Handle *handle)
 
 static void tm1637AssignPins(TM1637Handle *handle, TM1637Display display)
 {
-    (void)display;
-    handle->clkPort = CLK_GPIO_Port;
-    handle->clkPin = CLK_Pin;
-    handle->dioPort = DIO_GPIO_Port;
-    handle->dioPin = DIO_Pin;
+    if (display == TM1637_DISPLAY_2) {
+        handle->clkPort = CLK2_GPIO_Port;
+        handle->clkPin = CLK2_Pin;
+        handle->dioPort = DIO2_GPIO_Port;
+        handle->dioPin = DIO2_Pin;
+    }
+    else {
+        handle->clkPort = CLK1_GPIO_Port;
+        handle->clkPin = CLK1_Pin;
+        handle->dioPort = DIO1_GPIO_Port;
+        handle->dioPin = DIO1_Pin;
+    }
 }
